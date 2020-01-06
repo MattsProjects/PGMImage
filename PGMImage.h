@@ -1,5 +1,11 @@
 // PGMImage.h
-// Saves grabresult or pylon image as PGM format
+// Saves image buffers as PGM/PPM file format.
+// Can be used independently, or with the Pylon Camera Software Suite (by including PylonIncludes.h)
+// These file formats are known as the "lowest common denominator" for mono & color images respectively.
+// Images in these formats are essentially plain text files of raw, uncompressed pixel values.
+// More information can be found here:
+// PGM: http://netpbm.sourceforge.net/doc/pgm.html
+// PPM: http://netpbm.sourceforge.net/doc/ppm.html
 //
 // Copyright (c) 2016-2019 Matthew Breit - matt.breit@baslerweb.com or matt.breit@gmail.com
 //
@@ -24,173 +30,207 @@
 #endif
 
 #ifdef WIN_BUILD
-#define _CRT_SECURE_NO_WARNINGS // suppress fopen_s warnings for convinience
+#define _CRT_SECURE_NO_WARNINGS // suppress fopen_s warnings for convinience (if this header included first)
 #endif
 
+// We will use with Pylon
 #include <pylon/PylonIncludes.h>
+
 #include <cstdio>
+#include <string>
+#include <stdint.h>
 
 namespace PGMImage
 {
-	bool Save(const char* fileName, const Pylon::CGrabResultPtr& ptrGrabResult, std::string &errorMessage);
-	bool Save(const char* fileName, const Pylon::CPylonImage& image, std::string &errorMessage);
-}
+	struct PixelFormat
+	{
+		uint32_t BitDepth = 0;
+		bool IsUndefined = false;
+		bool IsPacked = false;
+		bool IsMono = false;
+		bool IsBayer = false;
+		bool IsYUV = false;
+		bool IsRGB = false;
+		bool IsBGR = false;
+	};
 
+	// Saves an image from a buffer. Adds ".pgm" or ".ppm" extension to the filename as needed.
+	static bool Save(std::string &fileName, const void* buffer, uint32_t width, uint32_t height, PGMImage::PixelFormat pgmPixelFormat, std::string &errorMessage);
+
+#ifdef PYLONINCLUDES_H_INCLUDED__
+	// Saves an image from a Pylon Grab Result pointer. Adds ".pgm" or ".ppm" extension to filename as needed.
+	static bool Save(std::string &fileName, const Pylon::CGrabResultPtr& pGrabResult, std::string &errorMessage);
+
+	// Saves an image from a PylonImage container. Adds ".pgm" or ".ppm" extension to filename as needed.
+	static bool Save(std::string &fileName, const Pylon::CPylonImage& Image, std::string &errorMessage);
+#endif
+}
 
 // *********************************************************************************************************
-// DEFINITIONS
-
-bool PGMImage::Save(const char* fileName, const Pylon::CGrabResultPtr& ptrGrabResult, std::string &errorMessage)
+inline bool PGMImage::Save(std::string &fileName, const void* buffer, uint32_t width, uint32_t height, PGMImage::PixelFormat pixelFormat, std::string &errorMessage)
 {
 	try
 	{
-		if (ptrGrabResult->GetPixelType() == Pylon::PixelType_Undefined)
+		if (pixelFormat.IsUndefined == true)
 		{
-			errorMessage = "ERROR: PixelType Undefined.";
+			errorMessage = "ERROR: Pixel Format Undefined.";
 			return false;
 		}
-		if (Pylon::IsPacked(ptrGrabResult->GetPixelType()) == true || Pylon::IsYUV(ptrGrabResult->GetPixelType()) == true)
+		if (pixelFormat.IsPacked == true || pixelFormat.IsYUV == true || pixelFormat.IsBGR == true)
 		{
-			errorMessage = "ERROR: Packed & YUV Image formats not supported yet.";
+			errorMessage = "ERROR: Packed, YUV, and BGR image formats not yet supported.";
 			return false;
 		}
 
-		std::FILE *const pgmfileOut = std::fopen(fileName, "wb+");
+		uint32_t bitDepth = pixelFormat.BitDepth;
 
-		uint32_t bitDepth = Pylon::BitDepth(ptrGrabResult->GetPixelType());
-		uint32_t imageWidth = ptrGrabResult->GetWidth();
-		uint32_t imageHeight = ptrGrabResult->GetHeight();
-		uint32_t pixelValue = 0;
-
-		if (bitDepth == 8)
+		if (bitDepth > 12 || bitDepth < 8)
 		{
-			fprintf(pgmfileOut, "P2\n%u %u\n255\n", imageWidth, imageHeight);
-			const uint8_t* pBuffer = (uint8_t*)ptrGrabResult->GetBuffer();
-			for (uint32_t i = 0; i < imageHeight * imageWidth; i++)
-			{
-				pixelValue = (uint32_t)pBuffer[i];
-				std::fprintf(pgmfileOut, "%u ", pixelValue);
-				if (i > 0 && i % imageWidth == 0)
-					std::fprintf(pgmfileOut, "\n");
-			}
-		}
-		if (bitDepth == 10)
-		{
-			std::fprintf(pgmfileOut, "P2\n%u %u\n1024\n", imageWidth, imageHeight);
-			const uint16_t* pbuffer = (uint16_t*)ptrGrabResult->GetBuffer();
-			for (uint32_t i = 0; i < imageHeight * imageWidth; i++)
-			{
-				pixelValue = (uint32_t)pbuffer[i];
-				std::fprintf(pgmfileOut, "%u ", pixelValue);
-				if (i > 0 && i % imageWidth == 0)
-					std::fprintf(pgmfileOut, "\n");
-			}
-		}
-		if (bitDepth == 12)
-		{
-			std::fprintf(pgmfileOut, "P2\n%u %u\n4095\n", imageWidth, imageHeight);
-			const uint16_t* pbuffer = (uint16_t*)ptrGrabResult->GetBuffer();
-			for (uint32_t i = 0; i < imageHeight * imageWidth; i++)
-			{
-				pixelValue = (uint32_t)pbuffer[i];
-				std::fprintf(pgmfileOut, "%u ", pixelValue);
-				if (i > 0 && i % imageWidth == 0)
-					std::fprintf(pgmfileOut, "\n");
-			}
+			errorMessage = "ERROR: Bit depths larger than 12bit and smaller than 8bit are not yet supported.";
+			return false;
 		}
 
-		std::fclose(pgmfileOut);
+		if (pixelFormat.IsMono == true || pixelFormat.IsBayer == true)
+		{
+			fileName.append(".pgm");
+			std::FILE *const pgmfileOut = std::fopen(fileName.c_str(), "wb+");
+
+			if (bitDepth == 8)
+			{
+				fprintf(pgmfileOut, "P2\n%u %u\n255\n", width, height);
+				const uint8_t* pBuffer = (uint8_t*)buffer;
+				for (uint32_t i = 0; i < width * height; i++)
+				{
+					uint32_t pixelValue = (uint32_t)pBuffer[i];
+					std::fprintf(pgmfileOut, "%u ", pixelValue);
+					if (i > 0 && i % width == 0)
+						std::fprintf(pgmfileOut, "\n");
+				}
+			}
+
+			if (bitDepth == 10 || bitDepth == 12)
+			{
+				if (bitDepth == 10)
+					std::fprintf(pgmfileOut, "P2\n%u %u\n1024\n", width, height);
+				if (bitDepth == 12)
+					std::fprintf(pgmfileOut, "P2\n%u %u\n4095\n", width, height);
+
+				const uint16_t* pbuffer = (uint16_t*)buffer;
+				for (uint32_t i = 0; i < width * height; i++)
+				{
+					uint32_t pixelValue = (uint32_t)pbuffer[i];
+					std::fprintf(pgmfileOut, "%u ", pixelValue);
+					if (i > 0 && i % width == 0)
+						std::fprintf(pgmfileOut, "\n");
+				}
+			}
+
+			std::fclose(pgmfileOut);
+		}
+
+		if (pixelFormat.IsRGB == true)
+		{
+			fileName.append(".ppm");
+			std::FILE *const pgmfileOut = std::fopen(fileName.c_str(), "wb+");
+
+			if (bitDepth == 8)
+			{
+				fprintf(pgmfileOut, "P3\n%u %u\n255\n", width, height);
+				const uint8_t* pBuffer = (uint8_t *)buffer;
+				for (uint32_t i = 0; i < (width * height) * 3; i += 3)
+				{
+					uint32_t pixelValue_c1 = (uint32_t)pBuffer[i];
+					uint32_t pixelValue_c2 = (uint32_t)pBuffer[i + 1];
+					uint32_t pixelValue_c3 = (uint32_t)pBuffer[i + 2];
+					std::fprintf(pgmfileOut, "%u ", pixelValue_c1);
+					std::fprintf(pgmfileOut, "%u ", pixelValue_c2);
+					std::fprintf(pgmfileOut, "%u ", pixelValue_c3);
+					if (i > 0 && i % width == 0)
+						std::fprintf(pgmfileOut, "\n");
+				}
+			}
+
+			std::fclose(pgmfileOut);
+		}
+
 		return true;
-	}
-	catch (GenICam::GenericException &e)
-	{
-		errorMessage = "An exception occured in SavePGM(): ";
-		errorMessage.append(e.GetDescription());
-		return false;
 	}
 	catch (std::exception &e)
 	{
-		errorMessage = "An exception occured in SavePGM(): ";
+		errorMessage = "An exception occured in Save(): ";
 		errorMessage.append(e.what());
 		return false;
 	}
 }
 
-bool PGMImage::Save(const char* fileName, const Pylon::CPylonImage& image, std::string &errorMessage)
+#ifdef PYLONINCLUDES_H_INCLUDED__
+inline bool PGMImage::Save(std::string &fileName, const Pylon::CGrabResultPtr &pGrabResult, std::string &errorMessage)
 {
-	try
+	Pylon::EPixelType pylonFormat = pGrabResult->GetPixelType();
+
+	if (pylonFormat == Pylon::PixelType_Undefined)
 	{
-		if (image.GetPixelType() == Pylon::PixelType_Undefined)
-		{
-			errorMessage = "ERROR: PixelType Undefined.";
-			return false;
-		}
-		if (Pylon::IsPacked(image.GetPixelType()) == true || Pylon::IsYUV(image.GetPixelType()) == true)
-		{
-			errorMessage = "ERROR: Packed & YUV Image formats not supported yet.";
-			return false;
-		}
+		errorMessage = "ERROR: Pixel Format Undefined.";
+		return false;
+	}
 
-		std::FILE *const pgmfileOut = std::fopen(fileName, "wb+");
+	PGMImage::PixelFormat pgmFormat;
 
-		uint32_t bitDepth = Pylon::BitDepth(image.GetPixelType());
-		uint32_t imageWidth = image.GetWidth();
-		uint32_t imageHeight = image.GetHeight();
-		uint32_t pixelValue = 0;
+	if (pylonFormat == Pylon::PixelType_Undefined)
+		pgmFormat.IsUndefined = true;
+	if (Pylon::IsMono(pylonFormat))
+		pgmFormat.IsMono = true;
+	if (Pylon::IsBayer(pylonFormat))
+		pgmFormat.IsBayer = true;
+	if (Pylon::IsYUV(pylonFormat))
+		pgmFormat.IsYUV = true;
+	if (Pylon::IsRGB(pylonFormat))
+		pgmFormat.IsRGB = true;
+	if (Pylon::IsBGR(pylonFormat))
+		pgmFormat.IsBGR = true;
 
-		if (bitDepth == 8)
-		{
-			std::fprintf(pgmfileOut, "P2\n%u %u\n255\n", imageWidth, imageHeight);
-			const uint8_t* pBuffer = (uint8_t*)image.GetBuffer();
-			for (uint32_t i = 0; i < imageHeight * imageWidth; i++)
-			{
-				pixelValue = (uint32_t)pBuffer[i];
-				std::fprintf(pgmfileOut, "%u ", pixelValue);
-				if (i > 0 && i % imageWidth == 0)
-					std::fprintf(pgmfileOut, "\n");
-			}
-		}
-		if (bitDepth == 10)
-		{
-			std::fprintf(pgmfileOut, "P2\n%u %u\n1024\n", imageWidth, imageHeight);
-			const uint16_t* pbuffer = (uint16_t*)image.GetBuffer();
-			for (uint32_t i = 0; i < imageHeight * imageWidth; i++)
-			{
-				pixelValue = (uint32_t)pbuffer[i];
-				std::fprintf(pgmfileOut, "%u ", pixelValue);
-				if (i > 0 && i % imageWidth == 0)
-					std::fprintf(pgmfileOut, "\n");
-			}
-		}
-		if (bitDepth == 12)
-		{
-			std::fprintf(pgmfileOut, "P2\n%u %u\n4095\n", imageWidth, imageHeight);
-			const uint16_t* pbuffer = (uint16_t*)image.GetBuffer();
-			for (uint32_t i = 0; i < imageHeight * imageWidth; i++)
-			{
-				pixelValue = (uint32_t)pbuffer[i];
-				std::fprintf(pgmfileOut, "%u ", pixelValue);
-				if (i > 0 && i % imageWidth == 0)
-					std::fprintf(pgmfileOut, "\n");
-			}
-		}
+	pgmFormat.BitDepth = Pylon::BitDepth(pylonFormat);
+	pgmFormat.IsPacked = Pylon::IsPacked(pylonFormat);
 
-		std::fclose(pgmfileOut);
+	if (PGMImage::Save(fileName, pGrabResult->GetBuffer(), pGrabResult->GetWidth(), pGrabResult->GetHeight(), pgmFormat, errorMessage) == true)
 		return true;
-	}
-	catch (GenICam::GenericException &e)
-	{
-		errorMessage = "An exception occured in SavePGM(): ";
-		errorMessage.append(e.GetDescription());
+	else
 		return false;
-	}
-	catch (std::exception &e)
-	{
-		errorMessage = "An exception occured in SavePGM(): ";
-		errorMessage.append(e.what());
-		return false;
-	}
 }
 
+inline bool PGMImage::Save(std::string &fileName, const Pylon::CPylonImage& Image, std::string &errorMessage)
+{
+	Pylon::EPixelType pylonFormat = Image.GetPixelType();
+
+	if (pylonFormat == Pylon::PixelType_Undefined)
+	{
+		errorMessage = "ERROR: Pixel Format Undefined.";
+		return false;
+	}
+
+	PGMImage::PixelFormat pgmFormat;
+
+	if (pylonFormat == Pylon::PixelType_Undefined)
+		pgmFormat.IsUndefined = true;
+	if (Pylon::IsMono(pylonFormat))
+		pgmFormat.IsMono = true;
+	if (Pylon::IsBayer(pylonFormat))
+		pgmFormat.IsBayer = true;
+	if (Pylon::IsYUV(pylonFormat))
+		pgmFormat.IsYUV = true;
+	if (Pylon::IsRGB(pylonFormat))
+		pgmFormat.IsRGB = true;
+	if (Pylon::IsBGR(pylonFormat))
+		pgmFormat.IsBGR = true;
+
+	pgmFormat.BitDepth = Pylon::BitDepth(pylonFormat);
+	pgmFormat.IsPacked = Pylon::IsPacked(pylonFormat);
+
+	if (PGMImage::Save(fileName, Image.GetBuffer(), Image.GetWidth(), Image.GetHeight(), pgmFormat, errorMessage) == true)
+		return true;
+	else
+		return false;
+}
+#endif
 // *********************************************************************************************************
 #endif
